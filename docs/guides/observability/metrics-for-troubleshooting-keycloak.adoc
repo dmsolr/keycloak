@@ -85,6 +85,56 @@ The snippet below is an example of a response provided by the metric endpoint:
 keycloak_credentials_password_hashing_validations_total{algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="valid",realm="realm-0",} 39949.0
 ----
 
+=== LDAP request metrics
+
+LDAP request metrics are experimental and disabled by default. To enable them, start {project_name} with the `ldap-metrics` feature and metrics enabled:
+
+<@kc.start parameters="--features=ldap-metrics --metrics-enabled=true"/>
+
+|===
+|Metric |Description
+
+m| keycloak_ldap_requests_seconds
+| Time taken for LDAP requests, exposed as a timer (`keycloak_ldap_requests_seconds_count`, `keycloak_ldap_requests_seconds_sum`, and `keycloak_ldap_requests_seconds_max`).
+
+|===
+
+====
+*Tags*
+
+`operation`:: LDAP operation, for example `search`, `lookupById`, `modify`, `create`, `remove`, `authenticate` or `connect`.
+`outcome`:: Either `success` or `error`.
+`error`:: Simple name of the exception when the operation failed. Empty string if no error occurred.
+`realm`:: Realm. Disabled by default.
+`ldap`:: Name of the LDAP user federation provider. Disabled by default.
+====
+
+The `realm` and `ldap` tags are disabled by default to avoid a high metrics cardinality. To enable them, provide a comma-separated list of tag names to the `ldap-metrics-tags` option:
+
+<@kc.start parameters="--features=ldap-metrics --metrics-enabled=true --ldap-metrics-tags=realm,ldap"/>
+
+To prevent a metrics cardinality explosion, at most 10000 distinct values are recorded per tag by default. Once that limit is exceeded, further new tag values are denied and a warning is logged. Use the SPI options `spi-storage--ldap--max-realm-tags` and `spi-storage--ldap--max-ldap-tags` to override those limits.
+
+By default, LDAP request durations only expose count, total time, and max statistics. To also publish a percentile histogram (with default buckets), which enables latency percentiles such as p50/p95/p99, set the `ldap-metrics-histograms-enabled` option to `true`:
+
+<@kc.start parameters="--features=ldap-metrics --metrics-enabled=true --ldap-metrics-histograms-enabled=true"/>
+
+To define explicit buckets for service level objectives (SLOs), provide a comma-separated list of durations in milliseconds to the `ldap-metrics-slos` option. Use it instead of the default histogram, or in combination with `ldap-metrics-histograms-enabled` to add additional buckets:
+
+<@kc.start parameters="--features=ldap-metrics --metrics-enabled=true --ldap-metrics-slos=5,10,25,50,250,500,1000"/>
+
+The SLO buckets can also be provided through the `KC_LDAP_METRICS_SLOS` environment variable. They are applied independently of `ldap-metrics-histograms-enabled`: setting the SLOs alone records only the specified buckets, while combining both adds the specified buckets on top of the default histogram buckets.
+
+The snippet below is an example of a response provided by the metric endpoint:
+
+[source]
+----
+# HELP keycloak_ldap_requests_seconds Time taken for LDAP requests
+# TYPE keycloak_ldap_requests_seconds timer
+keycloak_ldap_requests_seconds_count{error="",ldap="my-ldap",operation="search",outcome="success",realm="myrealm",} 12.0
+keycloak_ldap_requests_seconds_sum{error="",ldap="my-ldap",operation="search",outcome="success",realm="myrealm",} 0.345
+----
+
 == Next steps
 
 Return back to the <@links.observability id="metrics-for-troubleshooting"/> or proceed to <@links.observability id="metrics-for-troubleshooting-jvm"/>.

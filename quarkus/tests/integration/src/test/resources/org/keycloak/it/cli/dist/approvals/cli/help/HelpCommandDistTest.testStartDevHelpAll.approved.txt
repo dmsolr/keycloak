@@ -614,6 +614,21 @@ Management:
 
 Metrics:
 
+--ldap-metrics-histograms-enabled <true|false>
+                     Enables a histogram with default buckets for the duration of LDAP requests.
+                       Default: false. Available only when metrics are enabled and feature
+                       ldap-metrics is enabled.
+--ldap-metrics-slos <list of buckets>
+                     Service level objectives for LDAP request metrics. Use this instead of the
+                       default histogram, or use it in combination to add additional buckets.
+                       Specify a list of comma-separated values defined in milliseconds. Example
+                       with buckets from 5ms to 10s: 5,10,25,50,250,500,1000,2500,5000,10000
+                       Available only when metrics are enabled and feature ldap-metrics is enabled.
+--ldap-metrics-tags <tags>
+                     Comma-separated list of tags to be collected for LDAP request metrics.
+                       Disabled by default to avoid a high metrics cardinality. Possible values
+                       are: realm, ldap. Available only when metrics are enabled and feature
+                       ldap-metrics is enabled.
 --metrics-enabled <true|false>
                      If the server should expose metrics. If enabled, metrics are available at the
                        '/metrics' endpoint. Default: false.

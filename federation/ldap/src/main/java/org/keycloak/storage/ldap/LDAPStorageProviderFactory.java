@@ -18,13 +18,18 @@
 package org.keycloak.storage.ldap;
 
 import java.net.URI;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import javax.naming.NamingException;
@@ -84,7 +89,10 @@ import org.keycloak.utils.CredentialHelper;
 
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
 import org.jboss.logging.Logger;
 
 /**
@@ -101,9 +109,20 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
     private static final String SECURE_REFERRAL = "secureReferral";
     private static final boolean SECURE_REFERRAL_DEFAULT = true;
 
+    private static final String LDAP_REQUESTS_METER_NAME = "keycloak.ldap.requests";
     private static final String METRICS_ENABLED = "metricsEnabled";
+    private static final String METRICS_HISTOGRAMS_ENABLED = "metricsHistogramsEnabled";
+    private static final String METRICS_SLOS = "metricsSlos";
+    private static final String METRICS_TAGS = "metricsTags";
+    private static final String MAX_REALM_TAGS = "maxRealmTags";
+    private static final String MAX_LDAP_TAGS = "maxLdapTags";
+    private static final int DEFAULT_MAX_TAG_VALUES = 10000;
+    public static final String REALM_TAG = "realm";
+    public static final String LDAP_TAG = "ldap";
     private LDAPIdentityStoreRegistry ldapStoreRegistry;
-    private Meter.MeterProvider<Timer> ldapRequestTimer; // null when disabled
+    private Meter.MeterProvider<Timer> ldapRequestTimer; // null when disabled; may be wrapped per-store with realm/ldap tags when metricsTags requests them
+    private boolean withRealmTag;
+    private boolean withLdapTag;
     private boolean disableKerberosAuthenticationRoundTrip;
 
     protected static final List<ProviderConfigProperty> configProperties;
@@ -253,7 +272,7 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
     public LDAPStorageProvider create(KeycloakSession session, ComponentModel model) {
         Map<ComponentModel, LDAPConfigDecorator> configDecorators = getLDAPConfigDecorators(session, model);
 
-        LDAPIdentityStore ldapIdentityStore = this.ldapStoreRegistry.getLdapStore(session, model, configDecorators, ldapRequestTimer);
+        LDAPIdentityStore ldapIdentityStore = this.ldapStoreRegistry.getLdapStore(session, model, configDecorators, resolveRequestTimer(session, model));
         return new LDAPStorageProvider(this, session, model, ldapIdentityStore);
     }
 
@@ -405,9 +424,39 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
         boolean metricsEnabled = ldapMetricsFeature && metricsEnabledConfig && globalMetricsEnabled;
 
         if (metricsEnabled) {
-            this.ldapRequestTimer = Timer.builder("keycloak.ldap.requests")
-                    .description("Time taken for LDAP requests")
-                    .withRegistry(Metrics.globalRegistry);
+            Timer.Builder builder = Timer.builder(LDAP_REQUESTS_METER_NAME)
+                    .description("Time taken for LDAP requests");
+
+            if (config.getBoolean(METRICS_HISTOGRAMS_ENABLED, false)) {
+                // Publish a histogram with default buckets, consistent with http-metrics-histograms-enabled.
+                builder.publishPercentileHistogram(true);
+            }
+
+            // Explicit SLO buckets are applied independently of metricsHistogramsEnabled, consistent with
+            // http-metrics-slos: use them instead of the default histogram, or in combination to add buckets.
+            String slos = config.get(METRICS_SLOS);
+            if (slos != null && !slos.isBlank()) {
+                Duration[] sloDurations = Arrays.stream(slos.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .map(s -> Duration.ofMillis(Long.parseLong(s)))
+                        .toArray(Duration[]::new);
+                if (sloDurations.length > 0) {
+                    builder.serviceLevelObjectives(sloDurations);
+                }
+            }
+
+            Set<String> enabledTags = parseMetricsTags(config.get(METRICS_TAGS));
+            withRealmTag = enabledTags.contains(REALM_TAG);
+            withLdapTag = enabledTags.contains(LDAP_TAG);
+            if (withRealmTag) {
+                addTagCardinalityFilter(REALM_TAG, config.getInt(MAX_REALM_TAGS, DEFAULT_MAX_TAG_VALUES));
+            }
+            if (withLdapTag) {
+                addTagCardinalityFilter(LDAP_TAG, config.getInt(MAX_LDAP_TAGS, DEFAULT_MAX_TAG_VALUES));
+            }
+
+            this.ldapRequestTimer = builder.withRegistry(Metrics.globalRegistry);
         }
 
     }
@@ -429,6 +478,20 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
                 .type("boolean")
                 .helpText("Boolean to disable the local Kerberos service-ticket round trip in username/password authentication (deprecated).")
                 .defaultValue("false")
+                .add()
+
+                .property()
+                .name(MAX_REALM_TAGS)
+                .type(ProviderConfigProperty.INTEGER_TYPE)
+                .helpText("Maximum number of distinct 'realm' tag values for the keycloak.ldap.requests metric before new values are denied to prevent a metrics cardinality explosion. Only relevant when the 'realm' tag is enabled via ldap-metrics-tags.")
+                .defaultValue(DEFAULT_MAX_TAG_VALUES)
+                .add()
+
+                .property()
+                .name(MAX_LDAP_TAGS)
+                .type(ProviderConfigProperty.INTEGER_TYPE)
+                .helpText("Maximum number of distinct 'ldap' tag values for the keycloak.ldap.requests metric before new values are denied to prevent a metrics cardinality explosion. Only relevant when the 'ldap' tag is enabled via ldap-metrics-tags.")
+                .defaultValue(DEFAULT_MAX_TAG_VALUES)
                 .add();
 
         return builder.build();
@@ -864,5 +927,75 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
 
             throw new RuntimeException("Failed to set the server JNDI ObjectFactoryBuilder", e);
         }
+    }
+
+    /**
+     * Parses the {@code metricsTags} SPI option (mapped from the first-class {@code ldap-metrics-tags} option) and
+     * returns the set of enabled tag dimensions. Unknown values fail fast at startup.
+     */
+    static Set<String> parseMetricsTags(String tagsConfig) {
+        Set<String> enabled = new HashSet<>();
+        if (tagsConfig == null) {
+            return enabled;
+        }
+        for (String s : tagsConfig.split(",")) {
+            String tag = s.trim();
+            if (tag.isEmpty()) {
+                continue;
+            }
+            switch (tag) {
+                case REALM_TAG, LDAP_TAG -> enabled.add(tag);
+                default -> throw new IllegalArgumentException("Unknown tag for collecting LDAP metrics: '" + tag + "'. Supported: " + REALM_TAG + ", " + LDAP_TAG);
+            }
+        }
+        return enabled;
+    }
+
+    /**
+     * Denies new tag values for the given tag key on the LDAP requests meter once the maximum number of distinct values
+     * is exceeded, to prevent a metrics cardinality explosion. Mirrors the user event metrics cardinality guard.
+     */
+    private void addTagCardinalityFilter(String tagKey, int maxTagValues) {
+        AtomicBoolean logged = new AtomicBoolean(false);
+        Metrics.globalRegistry.config().meterFilter(
+                MeterFilter.maximumAllowableTags(LDAP_REQUESTS_METER_NAME, tagKey, maxTagValues, new MeterFilter() {
+                    @Override
+                    public MeterFilterReply accept(Meter.Id id) {
+                        if (logged.compareAndSet(false, true)) {
+                            logger.warnf("Meter '%s' exceeded the maximum number of %d tags for '%s', further new tag values will be denied. Tags: %s. Use the SPI option '%s' to override that.", id.getName(), maxTagValues, tagKey, id.getTags(), tagKey.equals(REALM_TAG) ? MAX_REALM_TAGS : MAX_LDAP_TAGS);
+                        }
+                        return MeterFilterReply.DENY;
+                    }
+                }));
+    }
+
+    /**
+     * Returns the timer provider to use for the given LDAP component. When realm/ldap tags are requested, the shared
+     * provider is wrapped so that every LDAP meter carries those tags; all record sites share this instance, so a
+     * single decoration covers them all. When no extra tag is requested, the original provider is returned unchanged.
+     */
+    private Meter.MeterProvider<Timer> resolveRequestTimer(KeycloakSession session, ComponentModel model) {
+        if (ldapRequestTimer == null || (!withRealmTag && !withLdapTag)) {
+            return ldapRequestTimer;
+        }
+        RealmModel realm = withRealmTag ? session.realms().getRealm(model.getParentId()) : null;
+        return withExtraTags(ldapRequestTimer,
+                withRealmTag, realm != null ? realm.getName() : "",
+                withLdapTag, model.getName());
+    }
+
+    static Meter.MeterProvider<Timer> withExtraTags(Meter.MeterProvider<Timer> delegate,
+            boolean addRealm, String realmName, boolean addLdap, String ldapName) {
+        return tags -> {
+            List<Tag> extra = new ArrayList<>();
+            tags.forEach(extra::add);
+            if (addRealm) {
+                extra.add(Tag.of(REALM_TAG, realmName == null ? "" : realmName));
+            }
+            if (addLdap) {
+                extra.add(Tag.of(LDAP_TAG, ldapName == null ? "" : ldapName));
+            }
+            return delegate.withTags(extra);
+        };
     }
 }

@@ -1141,6 +1141,14 @@ public class ConfigurationTest extends AbstractConfigurationTest {
         assertEquals("false", config.getConfigValue("kc.spi-jgroups-mtls--default--activated").getValue());
         assertNull(config.getConfigValue("kc.spi-jgroups-mtls--default--enabled").getValue());
     }
+
+    @Test
+    public void testLdapMetricsHistogramsMapsToSpiProperty() {
+        var config = createConfigFromCliArguments("--features=ldap-metrics", "--metrics-enabled=true",
+                "--ldap-metrics-histograms-enabled=true");
+        assertEquals("true", config.getConfigValue("kc.ldap-metrics-histograms-enabled").getValue());
+        assertEquals("true", config.getConfigValue("kc.spi-storage--ldap--metrics-histograms-enabled").getValue());
+    }
     
     @Test
     public void testSniNotSetViaConfig() {
