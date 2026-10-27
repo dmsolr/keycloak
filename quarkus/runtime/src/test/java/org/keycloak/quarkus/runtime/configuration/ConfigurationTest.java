@@ -1143,6 +1143,12 @@ public class ConfigurationTest extends AbstractConfigurationTest {
     }
 
     @Test
+    public void testLdapAllowedHostsMapsToSpiProperty() {
+        var config = createConfigFromCliArguments("--ldap-allowed-hosts=*.example.com,10.0.0.0/8");
+        assertEquals("*.example.com,10.0.0.0/8", config.getConfigValue("kc.spi-storage--ldap--allowed-hosts").getValue());
+    }
+
+    @Test
     public void testLdapMetricsHistogramsMapsToSpiProperty() {
         var config = createConfigFromCliArguments("--features=ldap-metrics", "--metrics-enabled=true",
                 "--ldap-metrics-histograms-enabled=true");

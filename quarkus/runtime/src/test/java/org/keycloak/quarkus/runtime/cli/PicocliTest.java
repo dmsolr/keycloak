@@ -982,6 +982,15 @@ Environment.setHomeDir(tmp);
     }
 
     @Test
+    public void testLdapAllowedHostsDerivedShowConfig() {
+        NonRunningPicocli nonRunningPicocli = pseudoLaunch("show-config", "--ldap-allowed-hosts=*.example.com,10.0.0.0/8");
+        // first class kc form should show up
+        assertThat(nonRunningPicocli.getOutString(), containsString("kc.ldap-allowed-hosts"));
+        // second class kc form should not
+        assertThat(nonRunningPicocli.getOutString(), not(containsString("kc.spi-storage--ldap--allowed-hosts")));
+    }
+
+    @Test
     public void logAsyncDisabledParent() {
         NonRunningPicocli nonRunningPicocli = pseudoLaunch("start-dev", "--log=file", "--log-console-async=true");
         assertEquals(CommandLine.ExitCode.USAGE, nonRunningPicocli.exitCode);

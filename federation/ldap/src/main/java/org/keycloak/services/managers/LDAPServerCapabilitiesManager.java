@@ -17,11 +17,13 @@
 package org.keycloak.services.managers;
 
 import java.util.Collections;
+import java.util.Properties;
 import java.util.Set;
 import javax.naming.ldap.LdapContext;
 
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.component.ComponentModel;
+import org.keycloak.component.ComponentValidationException;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.LDAPConstants;
 import org.keycloak.models.RealmModel;
@@ -29,7 +31,10 @@ import org.keycloak.representations.idm.ComponentRepresentation;
 import org.keycloak.representations.idm.LDAPCapabilityRepresentation;
 import org.keycloak.representations.idm.TestLdapConnectionRepresentation;
 import org.keycloak.services.ServicesLogger;
+import org.keycloak.services.resources.admin.AdminRoot;
+import org.keycloak.storage.UserStorageProvider;
 import org.keycloak.storage.ldap.LDAPConfig;
+import org.keycloak.storage.ldap.LDAPStorageProviderFactory;
 import org.keycloak.storage.ldap.idm.store.ldap.LDAPContextManager;
 import org.keycloak.storage.ldap.idm.store.ldap.LDAPIdentityStore;
 import org.keycloak.storage.ldap.idm.store.ldap.LDAPUtil;
@@ -49,6 +54,11 @@ public class LDAPServerCapabilitiesManager {
     public static final String TEST_AUTHENTICATION = "testAuthentication";
     public static final String QUERY_SERVER_CAPABILITIES = "queryServerCapabilities";
     public static final int DEFAULT_TEST_TIMEOUT = 30000; // 30s default test timeout
+
+    // Admin message key (themes base/admin messages) shown when a connection URL host is rejected by the allow-list.
+    // Shared with the component-save path (LDAPStorageProviderFactory.validateConnectionUrlHosts) so that both the
+    // Save and the test-connection/test-authentication/query-capabilities surfaces display the same localized text.
+    public static final String HOST_NOT_ALLOWED_MESSAGE_KEY = "ldapErrorConnectionUrlHostNotAllowed";
 
     private static int parseConnectionTimeout(String connectionTimeout) {
         if (StringUtil.isNotBlank(connectionTimeout)) {
@@ -98,12 +108,16 @@ public class LDAPServerCapabilitiesManager {
     }
 
     public static Set<LDAPCapabilityRepresentation> queryServerCapabilities(TestLdapConnectionRepresentation config, KeycloakSession session,
-                                                                            RealmModel realm) {
+                                                                            RealmModel realm) throws javax.naming.NamingException {
 
         if (! QUERY_SERVER_CAPABILITIES.equals(config.getAction())) {
             ServicesLogger.LOGGER.unknownAction(config.getAction());
             return Collections.emptySet();
         }
+
+        // enforce the server-level LDAP host allow-list so that this endpoint cannot be used to probe
+        // hosts that a saved LDAP provider would not be allowed to connect to
+        validateHostsAllowed(session, config.getConnectionUrl());
 
         LDAPConfig ldapConfig = buildLDAPConfig(config, realm);
         return new LDAPIdentityStore(session, ldapConfig).queryServerCapabilities();
@@ -119,6 +133,48 @@ public class LDAPServerCapabilitiesManager {
         public CredentialReentryRequiredException(String s) {
             super(s);
         }
+    }
+
+    public static class HostNotAllowedException extends javax.naming.NamingException {
+        public HostNotAllowedException(String s) {
+            super(s);
+        }
+    }
+
+    /**
+     * Enforces the server-level LDAP host allow-list (option {@code ldap-allowed-hosts}) on a connection URL coming
+     * from the admin test-connection/test-authentication/query-server-capabilities endpoints, which bypass
+     * {@link LDAPStorageProviderFactory#validateConfiguration}. Fails closed: if the LDAP storage provider factory is
+     * unavailable, the connection is not allowed either.
+     *
+     * <p>The thrown {@link HostNotAllowedException} carries the admin message key (not a hard-coded string) so the REST
+     * layer can localize it exactly like the component-save path via {@link #localizeHostNotAllowedMessage}.
+     */
+    private static void validateHostsAllowed(KeycloakSession session, String connectionUrl) throws HostNotAllowedException {
+        LDAPStorageProviderFactory factory = (LDAPStorageProviderFactory) session.getKeycloakSessionFactory()
+                .getProviderFactory(UserStorageProvider.class, LDAPConstants.LDAP_PROVIDER);
+        if (factory == null) {
+            throw new HostNotAllowedException(HOST_NOT_ALLOWED_MESSAGE_KEY);
+        }
+        try {
+            factory.validateConnectionUrlHosts(connectionUrl);
+        } catch (ComponentValidationException e) {
+            // preserve the message key raised by validateConnectionUrlHosts (fall back to the shared key)
+            String key = e.getMessage() != null ? e.getMessage() : HOST_NOT_ALLOWED_MESSAGE_KEY;
+            throw new HostNotAllowedException(key);
+        }
+    }
+
+    /**
+     * Resolves the admin message key carried by a {@link HostNotAllowedException} into localized text, mirroring
+     * {@code ComponentResource.localizedErrorResponse} used by the component-save path, so the test-connection /
+     * test-authentication / query-capabilities endpoints show the same human-readable message as Save instead of a
+     * bare error code.
+     */
+    public static String localizeHostNotAllowedMessage(KeycloakSession session, RealmModel realm, String locale, HostNotAllowedException e) {
+        String key = e.getMessage();
+        Properties messages = AdminRoot.getMessages(session, realm, locale, "admin-messages", "messages");
+        return messages.getProperty(key, key);
     }
 
     public static String getErrorCode(Throwable throwable) {
@@ -139,6 +195,8 @@ public class LDAPServerCapabilitiesManager {
              errorMsg = "InvalidBindDN";
         if (throwable instanceof CredentialReentryRequiredException)
              errorMsg = "CredentialReentryRequired";
+        if (throwable instanceof HostNotAllowedException)
+             errorMsg = "HostNotAllowed";
         if (throwable instanceof javax.naming.NameNotFoundException)
              errorMsg = "NameNotFound";
         if (throwable instanceof GroupTreeResolver.GroupTreeResolveException) {
@@ -181,6 +239,10 @@ public class LDAPServerCapabilitiesManager {
             // only test the connection.
             config.setAuthType(LDAPConstants.AUTH_TYPE_NONE);
         }
+
+        // enforce the server-level LDAP host allow-list so that the test endpoints cannot be used to probe
+        // hosts that a saved LDAP provider would not be allowed to connect to
+        validateHostsAllowed(session, config.getConnectionUrl());
 
         LDAPConfig ldapConfig = buildLDAPConfig(config, realm);
 

@@ -74,6 +74,10 @@ public class TestLdapConnectionResource {
         try {
             LDAPServerCapabilitiesManager.testLDAP(config, session, realm);
             return Response.noContent().build();
+        } catch (LDAPServerCapabilitiesManager.HostNotAllowedException e) {
+            throw ErrorResponse.error(
+                    LDAPServerCapabilitiesManager.localizeHostNotAllowedMessage(session, realm, auth.adminAuth().getToken().getLocale(), e),
+                    Response.Status.BAD_REQUEST);
         } catch(Exception e) {
             String errorMsg = LDAPServerCapabilitiesManager.getErrorCode(e);
             throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
@@ -92,6 +96,10 @@ public class TestLdapConnectionResource {
         try {
             LDAPServerCapabilitiesManager.testLDAP(config, session, realm);
             return Response.noContent().build();
+        } catch (LDAPServerCapabilitiesManager.HostNotAllowedException e) {
+            throw ErrorResponse.error(
+                    LDAPServerCapabilitiesManager.localizeHostNotAllowedMessage(session, realm, auth.adminAuth().getToken().getLocale(), e),
+                    Response.Status.BAD_REQUEST);
         } catch(Exception e) {
             String errorMsg = LDAPServerCapabilitiesManager.getErrorCode(e);
             throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);

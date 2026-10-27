@@ -19,6 +19,10 @@ final class SecurityPropertyMappers implements PropertyMapperGrouping {
         return List.of(
                 fromOption(SecurityOptions.FIPS_MODE).transformer(SecurityPropertyMappers::resolveFipsMode)
                         .paramLabel("mode")
+                        .build(),
+                fromOption(SecurityOptions.LDAP_ALLOWED_HOSTS)
+                        .to("kc.spi-storage--ldap--allowed-hosts")
+                        .paramLabel("hosts")
                         .build()
         );
     }

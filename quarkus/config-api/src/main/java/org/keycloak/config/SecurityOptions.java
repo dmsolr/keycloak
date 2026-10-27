@@ -18,6 +18,17 @@ public class SecurityOptions {
             .defaultValue(FipsMode.DISABLED)
             .build();
 
+    public static final Option<List<String>> LDAP_ALLOWED_HOSTS = OptionBuilder.listOptionBuilder("ldap-allowed-hosts", String.class)
+            .category(OptionCategory.SECURITY)
+            .description("Comma-separated allow-list of hosts that an LDAP user storage provider is permitted to connect to, "
+                    + "used to reduce the SSRF surface of the LDAP connection URL. Each entry may be an exact hostname "
+                    + "(ldap.example.com), a wildcard suffix (*.example.com, matching sub-domains only), a literal IP address "
+                    + "(192.0.2.1, fd00::1), or an IP CIDR range (10.0.0.0/8, fd00::/8). Hosts are matched literally and are "
+                    + "never resolved via DNS, so a hostname is only matched by hostname entries and a literal IP only by "
+                    + "IP/CIDR entries. When unset or empty, any host is allowed.")
+            .buildTime(false)
+            .build();
+
     private static List<String> getFipsModeValues() {
         return Arrays.asList(FipsMode.NON_STRICT.toString(), FipsMode.STRICT.toString());
     }

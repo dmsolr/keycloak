@@ -78,6 +78,10 @@ public class LdapServerCapabilitiesResource {
         try {
             Set<LDAPCapabilityRepresentation> ldapCapabilities = LDAPServerCapabilitiesManager.queryServerCapabilities(config, session, realm);
             return Response.ok().entity(ldapCapabilities).build();
+        } catch (LDAPServerCapabilitiesManager.HostNotAllowedException e) {
+            throw ErrorResponse.error(
+                    LDAPServerCapabilitiesManager.localizeHostNotAllowedMessage(session, realm, auth.adminAuth().getToken().getLocale(), e),
+                    Response.Status.BAD_REQUEST);
         } catch (Exception e) {
             throw ErrorResponse.error("ldapServerCapabilities error", Response.Status.BAD_REQUEST);
         }

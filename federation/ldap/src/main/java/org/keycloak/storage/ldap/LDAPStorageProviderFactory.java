@@ -109,6 +109,10 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
     private static final String SECURE_REFERRAL = "secureReferral";
     private static final boolean SECURE_REFERRAL_DEFAULT = true;
 
+    // SPI config key (mapped from the first-class 'ldap-allowed-hosts' option, env 'KC_LDAP_ALLOWED_HOSTS') holding the
+    // comma-separated allow-list of hosts an LDAP provider may connect to. Empty/unset allows any host.
+    private static final String ALLOWED_HOSTS = "allowedHosts";
+
     private static final String LDAP_REQUESTS_METER_NAME = "keycloak.ldap.requests";
     private static final String METRICS_ENABLED = "metricsEnabled";
     private static final String METRICS_HISTOGRAMS_ENABLED = "metricsHistogramsEnabled";
@@ -124,6 +128,7 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
     private boolean withRealmTag;
     private boolean withLdapTag;
     private boolean disableKerberosAuthenticationRoundTrip;
+    private LdapHostAllowList allowedHosts = LdapHostAllowList.parse(null);
 
     protected static final List<ProviderConfigProperty> configProperties;
 
@@ -330,6 +335,7 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
                     throw new ComponentValidationException("ldapErrorInvalidConnectionUrl");
                 }
             }
+            validateConnectionUrlHosts(connectionUrl);
         }
 
         // This parses the configuration directly as cfg.getConnectionPooling() will take into account the current StartTLS setting
@@ -362,6 +368,37 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
             // This prevents credentials from being silently sent to a different server.
             validateBindCredentialOnUrlChange(session, realm, config, cfg);
         }
+    }
+
+    /**
+     * Validates every host in the given (possibly space-separated multi-URL) LDAP connection URL against the
+     * server-level host allow-list configured via the {@code ldap-allowed-hosts} option. Shared by
+     * {@link #validateConfiguration} (component create/update) and the test-connection/test-authentication endpoints
+     * ({@code LDAPServerCapabilitiesManager}), so the allow-list cannot be bypassed by the admin "Test connection" flow.
+     *
+     * @throws ComponentValidationException with the {@code ldapErrorConnectionUrlHostNotAllowed} message key when any
+     *         host is not permitted by the allow-list
+     */
+    public void validateConnectionUrlHosts(String connectionUrl) throws ComponentValidationException {
+        for (String url : LDAPConstants.toLdapUrls(connectionUrl)) {
+            URI uri;
+            try {
+                uri = URI.create(url);
+            } catch (IllegalArgumentException e) {
+                throw new ComponentValidationException("ldapErrorInvalidConnectionUrl");
+            }
+            if (!allowedHosts.isAllowed(uri.getHost())) {
+                throw new ComponentValidationException("ldapErrorConnectionUrlHostNotAllowed");
+            }
+        }
+    }
+
+    LdapHostAllowList getAllowedHosts() {
+        return allowedHosts;
+    }
+
+    void setAllowedHosts(LdapHostAllowList allowedHosts) {
+        this.allowedHosts = allowedHosts;
     }
 
     @SuppressWarnings("unchecked")
@@ -418,6 +455,7 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
 
         this.disableKerberosAuthenticationRoundTrip = config.getBoolean("disableKerberosAuthenticationRoundTrip", Boolean.FALSE);
         this.ldapStoreRegistry = new LDAPIdentityStoreRegistry();
+        this.allowedHosts = LdapHostAllowList.parse(config.get(ALLOWED_HOSTS));
         boolean ldapMetricsFeature = Profile.isFeatureEnabled(Profile.Feature.LDAP_METRICS);
         boolean metricsEnabledConfig = config.getBoolean(METRICS_ENABLED, true);
         boolean globalMetricsEnabled = config.root().getBoolean(MetricsOptions.METRICS_ENABLED.getKey(), false);
