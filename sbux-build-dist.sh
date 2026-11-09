@@ -25,6 +25,7 @@
 # 环境变量（均可选）:
 #   IMAGE_REPO    容器镜像仓库/名称       (默认: keycloak)
 #   IMAGE_TAG     容器镜像 tag            (默认: DERIVATIVE_VERSION)
+#   PLATFORM      镜像目标平台             (默认: 空，用 docker 本机平台；如 linux/amd64)
 #   OUT_DIR       最终产物输出目录         (默认: sbux-dist，未跟踪)
 #   SKIP_BUILD=1  复用已有 dist 构建，仅做后处理 + 镜像
 #   SKIP_IMAGE=1  只产出 tar 包，跳过 docker 镜像
@@ -34,6 +35,7 @@
 #                                              #    基线已含 -sbux.N 后缀时直接沿用，不再叠加）
 #   ./sbux-build-dist.sh 26.8.1-sbux.2         # 指定衍生版本号
 #   IMAGE_REPO=registry.example.com/sbux/keycloak ./sbux-build-dist.sh 26.8.1-sbux.1
+#   PLATFORM=linux/amd64 ./sbux-build-dist.sh    # 交叉构建 amd64 镜像
 #
 set -euo pipefail
 
@@ -41,7 +43,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 case "${1:-}" in -h|--help) usage ;; esac
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
@@ -70,6 +72,7 @@ ARCHIVE_NAME="${ARCHIVE_PREFIX}-${DERIV_VERSION}"          # 例: keycloak-26.8.
 IMAGE_REPO="${IMAGE_REPO:-keycloak}"
 IMAGE_TAG="${IMAGE_TAG:-${DERIV_VERSION}}"
 IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
+PLATFORM="${PLATFORM:-}"                                  # 例: linux/amd64；留空用 docker 本机平台
 OUT_DIR="${OUT_DIR:-sbux-dist}"
 GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -79,6 +82,7 @@ echo "  基线(已提交)版本  : ${BASE_VERSION}"
 echo "  衍生版本          : ${DERIV_VERSION}"
 echo "  归档名            : ${ARCHIVE_NAME}.tar.gz"
 echo "  镜像              : ${IMAGE_REF}"
+echo "  目标平台          : ${PLATFORM:-<docker 本机平台>}"
 echo "  输出目录          : ${OUT_DIR}"
 echo "  git commit        : ${GIT_COMMIT}"
 echo "  构建时间(UTC)     : ${BUILD_TIME}"
@@ -147,7 +151,12 @@ if [[ "${SKIP_IMAGE:-0}" != "1" ]]; then
     log "构建容器镜像 ${IMAGE_REF}（临时上下文，不写入 quarkus/container/）"
     cp quarkus/container/Dockerfile quarkus/container/ubi-null.sh "${CTX_DIR}/"
     cp "${FINAL_TARBALL}" "${CTX_DIR}/"
+    PLATFORM_ARGS=()
+    if [[ -n "${PLATFORM}" ]]; then
+      PLATFORM_ARGS=(--platform "${PLATFORM}")
+    fi
     docker build \
+      ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
       --build-arg KEYCLOAK_VERSION="${DERIV_VERSION}" \
       --build-arg KEYCLOAK_DIST="${ARCHIVE_NAME}.tar.gz" \
       --build-arg KEYCLOAK_VENDOR="sbux" \
