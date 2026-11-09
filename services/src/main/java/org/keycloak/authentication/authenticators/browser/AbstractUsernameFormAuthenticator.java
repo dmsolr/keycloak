@@ -62,6 +62,13 @@ public abstract class AbstractUsernameFormAuthenticator extends AbstractFormAuth
     // Flag is true if user was already set in the authContext before this authenticator was triggered. In this case we skip clearing of the user after unsuccessful password authentication
     public static final String USER_SET_BEFORE_USERNAME_PASSWORD_AUTH = "USER_SET_BEFORE_USERNAME_PASSWORD_AUTH";
 
+    /**
+     * Auth note carrying a login-form message key to show instead of the default invalid-credentials message
+     * when password validation fails for a reason other than a wrong password (for example an expired
+     * password reported by an LDAP user storage provider). The note is consumed and removed on use.
+     */
+    public static final String LOGIN_ERROR_MESSAGE = "LOGIN_ERROR_MESSAGE";
+
     @Override
     public void action(AuthenticationFlowContext context) {
 
@@ -239,7 +246,13 @@ public abstract class AbstractUsernameFormAuthenticator extends AbstractFormAuth
 
         AuthenticatorUtils.setupReauthenticationInUsernamePasswordFormError(context);
 
-        Response challengeResponse = challenge(context, getDefaultChallengeMessage(context), FIELD_PASSWORD);
+        // A user storage provider may report a specific reason (for example an expired LDAP password)
+        // instead of a wrong password. Show that message rather than the generic invalid-credentials one.
+        String loginErrorMessage = context.getAuthenticationSession().getAuthNote(LOGIN_ERROR_MESSAGE);
+        context.getAuthenticationSession().removeAuthNote(LOGIN_ERROR_MESSAGE);
+        String challengeMessage = (!isEmptyPassword && loginErrorMessage != null) ? loginErrorMessage : getDefaultChallengeMessage(context);
+
+        Response challengeResponse = challenge(context, challengeMessage, FIELD_PASSWORD);
         if(isEmptyPassword) {
             context.forceChallenge(challengeResponse);
         }else{

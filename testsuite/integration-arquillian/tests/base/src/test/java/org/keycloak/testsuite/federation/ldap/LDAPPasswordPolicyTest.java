@@ -103,25 +103,25 @@ public class LDAPPasswordPolicyTest extends AbstractLDAPTest {
     @LDAPPasswordPolicy(mustChange=true, maxAge=31536000)
     public void testExpiredPassword() throws Exception {
         // Login with user that has an expired password.
-        oauth.loginForm().open();
+        oauth.openLoginForm();
         loginPage.login("expired", "Password1");
 
         // Forced password change sends user to update password page.
         passwordUpdatePage.assertCurrent();
 
         // Repeated login without changing password should still send user to update password page.
-        oauth.loginForm().open();
+        oauth.openLoginForm();
         loginPage.login("expired", "Password1");
         passwordUpdatePage.assertCurrent();
 
         // Change password and verify that user can login with new password.
         passwordUpdatePage.changePassword("changedpassword", "changedpassword");
-        appPage.assertCurrent();
+        Assertions.assertTrue(oauth.parseLoginResponse().isSuccess());
 
-        UserRepresentation user = testRealm().users().search("expired").get(0);
-        testRealm().users().get(user.getId()).logout();
-        oauth.loginForm().open();
+        UserRepresentation user = managedRealm.admin().users().search("expired").get(0);
+        managedRealm.admin().users().get(user.getId()).logout();
+        oauth.openLoginForm();
         loginPage.login("expired", "changedpassword");
-        appPage.assertCurrent();
+        Assertions.assertTrue(oauth.parseLoginResponse().isSuccess());
     }
 }

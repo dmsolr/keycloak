@@ -25,12 +25,15 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import javax.naming.AuthenticationException;
 
+import org.keycloak.authentication.authenticators.browser.AbstractUsernameFormAuthenticator;
+import org.keycloak.authentication.requiredactions.UpdatePassword;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.models.LDAPConstants;
 import org.keycloak.models.ModelException;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.services.messages.Messages;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.storage.UserStorageProvider;
 import org.keycloak.storage.ldap.LDAPStorageProvider;
@@ -56,7 +59,8 @@ public class MSADUserAccountControlStorageMapper extends AbstractLDAPStorageMapp
 
     private static final Logger logger = Logger.getLogger(MSADUserAccountControlStorageMapper.class);
 
-    private static final Pattern AUTH_EXCEPTION_REGEX = Pattern.compile(".*AcceptSecurityContext error, data ([0-9a-f]*), v.*");
+    // MSAD 与 Samba AD DC 使用相同的诊断消息格式，DOTALL 允许消息包含换行。
+    private static final Pattern AUTH_EXCEPTION_REGEX = Pattern.compile(".*AcceptSecurityContext error, data ([0-9a-f]*), v.*", Pattern.DOTALL);
     private static final Pattern ERROR_CODE_REGEX = Pattern.compile(".*ERROR CODE ([0-9A-F]*) - ([0-9A-F]*).*");
 
     // See https://datatracker.ietf.org/doc/html/rfc4511#appendix-A.2
@@ -145,25 +149,40 @@ public class MSADUserAccountControlStorageMapper extends AbstractLDAPStorageMapp
 
     @Override
     public boolean onAuthenticationFailure(LDAPObject ldapUser, UserModel user, AuthenticationException ldapException, RealmModel realm) {
-        String exceptionMessage = ldapException.getMessage();
-        Matcher m = AUTH_EXCEPTION_REGEX.matcher(exceptionMessage);
-        if (m.matches()) {
-            String errorCode = m.group(1);
-            return processAuthErrorCode(errorCode, user);
-        } else {
-            return false;
+        String errorCode = extractErrorCode(ldapException.getMessage());
+        return errorCode != null && processAuthErrorCode(errorCode, user);
+    }
+
+    /**
+     * 从 LDAP bind 失败的诊断消息中提取 MSAD 错误码，例如 {@code 532} 或 {@code 773}。
+     *
+     * @param exceptionMessage 认证异常消息，可以为 {@code null}
+     * @return 错误码；消息不匹配时返回 {@code null}
+     */
+    static String extractErrorCode(String exceptionMessage) {
+        if (exceptionMessage == null) {
+            return null;
         }
+        Matcher m = AUTH_EXCEPTION_REGEX.matcher(exceptionMessage);
+        return m.matches() ? m.group(1) : null;
     }
 
     protected boolean processAuthErrorCode(String errorCode, UserModel user) {
         logger.debugf("MSAD Error code is '%s' after failed LDAP login of user '%s'. Realm is '%s'", errorCode, user.getUsername(), getRealmName());
 
-        if (ldapProvider.getEditMode() == UserStorageProvider.EditMode.WRITABLE) {
-            if (errorCode.equals("532") || errorCode.equals("773")) {
+        AuthErrorOutcome outcome = resolveAuthErrorCode(errorCode, ldapProvider.getEditMode());
+
+        // 将专门的提示消息写入认证会话，供登录页或改密页显示，避免用户只看到无效凭据。
+        AuthenticationSessionModel authSession = getSession().getContext().getAuthenticationSession();
+        if (outcome.authNoteName != null && authSession != null) {
+            authSession.setAuthNote(outcome.authNoteName, outcome.messageKey);
+        }
+
+        switch (outcome.action) {
+            case UPDATE_PASSWORD:
                 // User needs to change his MSAD password. Allow him to login, but add UPDATE_PASSWORD required action to authenticationSession
                 if (user.getRequiredActionsStream().noneMatch(action -> Objects.equals(action, UserModel.RequiredAction.UPDATE_PASSWORD.name()))) {
                     // This usually happens when 532 was returned, which means that "pwdLastSet" is set to some positive value, which is older than MSAD password expiration policy.
-                    AuthenticationSessionModel authSession = getSession().getContext().getAuthenticationSession();
                     if (authSession != null) {
                         if (authSession.getRequiredActions().stream().noneMatch(action -> Objects.equals(action, UserModel.RequiredAction.UPDATE_PASSWORD.name()))) {
                             logger.debugf("Adding requiredAction UPDATE_PASSWORD to the authenticationSession of user %s", user.getUsername());
@@ -179,19 +198,80 @@ public class MSADUserAccountControlStorageMapper extends AbstractLDAPStorageMapp
                     // by administrator (or user) to expire
                     logger.tracef("Skip adding required action UPDATE_PASSWORD. It was already set on user '%s' in realm '%s'", user.getUsername(), getRealmName());
                 }
-                return true;
-            } else if (errorCode.equals("533")) {
+                break;
+            case DISABLE_USER:
                 // User is disabled in MSAD. Set him to disabled in KC as well
                 if (user.isEnabled()) {
                     user.setEnabled(false);
                 }
-                return true;
-            } else if (errorCode.equals("775")) {
-                logger.warnf("Locked user '%s' attempt to login. Realm is '%s'", user.getUsername(), getRealmName());
-            }
+                break;
+            case NONE:
+                if (errorCode.equals("775")) {
+                    logger.warnf("Locked user '%s' attempt to login. Realm is '%s'", user.getUsername(), getRealmName());
+                }
+                break;
         }
 
-        return false;
+        return outcome.allowed;
+    }
+
+    /**
+     * 根据 MSAD/Samba 诊断错误码与 Edit mode 决定认证失败的处理方式（纯函数，便于单测）。
+     *
+     * <p>532/773 表示密码过期或下次登录须改密；701 表示账户已过期；533 表示账户禁用；775 表示账户锁定。
+     * WRITABLE 模式下 532/773 放行进入改密流程，533 同步禁用用户；其余情况不放行，
+     * 但通过 auth note 携带专门的提示消息 key，使登录页不再显示无效凭据。
+     *
+     * @param errorCode 诊断错误码，例如 {@code 532}
+     * @param editMode  LDAP provider 的 Edit mode
+     * @return 处理结果
+     */
+    static AuthErrorOutcome resolveAuthErrorCode(String errorCode, UserStorageProvider.EditMode editMode) {
+        boolean writable = editMode == UserStorageProvider.EditMode.WRITABLE;
+        switch (errorCode) {
+            case "532":
+            case "773":
+                if (writable) {
+                    return new AuthErrorOutcome(true, AuthErrorAction.UPDATE_PASSWORD,
+                            UpdatePassword.UPDATE_PASSWORD_MESSAGE, Messages.PASSWORD_EXPIRED_UPDATE);
+                }
+                return new AuthErrorOutcome(false, AuthErrorAction.NONE,
+                        AbstractUsernameFormAuthenticator.LOGIN_ERROR_MESSAGE, Messages.PASSWORD_EXPIRED_CONTACT_ADMIN);
+            case "701":
+                return new AuthErrorOutcome(false, AuthErrorAction.NONE,
+                        AbstractUsernameFormAuthenticator.LOGIN_ERROR_MESSAGE, Messages.ACCOUNT_EXPIRED);
+            case "533":
+                if (writable) {
+                    // 放行后由 enabledUser 检查显示 accountDisabledMessage，保持既有行为
+                    return new AuthErrorOutcome(true, AuthErrorAction.DISABLE_USER, null, null);
+                }
+                return new AuthErrorOutcome(false, AuthErrorAction.NONE,
+                        AbstractUsernameFormAuthenticator.LOGIN_ERROR_MESSAGE, Messages.ACCOUNT_DISABLED);
+            case "775":
+                return new AuthErrorOutcome(false, AuthErrorAction.NONE,
+                        AbstractUsernameFormAuthenticator.LOGIN_ERROR_MESSAGE, Messages.ACCOUNT_LOCKED);
+            default:
+                return new AuthErrorOutcome(false, AuthErrorAction.NONE, null, null);
+        }
+    }
+
+    enum AuthErrorAction {
+        NONE, UPDATE_PASSWORD, DISABLE_USER
+    }
+
+    static final class AuthErrorOutcome {
+
+        final boolean allowed;
+        final AuthErrorAction action;
+        final String authNoteName;
+        final String messageKey;
+
+        AuthErrorOutcome(boolean allowed, AuthErrorAction action, String authNoteName, String messageKey) {
+            this.allowed = allowed;
+            this.action = action;
+            this.authNoteName = authNoteName;
+            this.messageKey = messageKey;
+        }
     }
 
 

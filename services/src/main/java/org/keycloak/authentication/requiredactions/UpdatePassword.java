@@ -37,6 +37,8 @@ import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
 import org.keycloak.events.EventBuilder;
 import org.keycloak.events.EventType;
+import org.keycloak.forms.login.LoginFormsProvider;
+import org.keycloak.forms.login.MessageType;
 import org.keycloak.models.Constants;
 import org.keycloak.models.KeycloakContext;
 import org.keycloak.models.KeycloakSession;
@@ -60,6 +62,12 @@ import org.jboss.logging.Logger;
 public class UpdatePassword implements RequiredActionProvider, RequiredActionFactory {
 
     private static final Logger logger = Logger.getLogger(UpdatePassword.class);
+
+    /**
+     * Auth note carrying a message key to show on the update-password page instead of the default
+     * action message (for example a notice that the password has expired, set by an LDAP user storage provider).
+     */
+    public static final String UPDATE_PASSWORD_MESSAGE = "UPDATE_PASSWORD_MESSAGE";
 
     @Override
     public InitiatedActionSupport initiatedActionSupport() {
@@ -95,9 +103,14 @@ public class UpdatePassword implements RequiredActionProvider, RequiredActionFac
 
     @Override
     public void requiredActionChallenge(RequiredActionContext context) {
-        Response challenge = context.form()
-                .setAttribute("username", context.getAuthenticationSession().getAuthenticatedUser().getUsername())
-                .createResponse(UserModel.RequiredAction.UPDATE_PASSWORD);
+        LoginFormsProvider form = context.form()
+                .setAttribute("username", context.getAuthenticationSession().getAuthenticatedUser().getUsername());
+        // A user storage provider may supply a specific notice (for example an expired password).
+        String message = context.getAuthenticationSession().getAuthNote(UPDATE_PASSWORD_MESSAGE);
+        if (message != null) {
+            form.setMessage(MessageType.WARNING, message);
+        }
+        Response challenge = form.createResponse(UserModel.RequiredAction.UPDATE_PASSWORD);
         context.challenge(challenge);
     }
 

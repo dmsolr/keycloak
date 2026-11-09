@@ -190,6 +190,50 @@ This mapper maps LDAP groups from a branch of an LDAP tree into groups within {p
 [[_msad_mapper]]
 MSAD User Account Mapper::
 This mapper is specific to Microsoft Active Directory (MSAD). It can integrate the MSAD user account state into the {project_name} account state, such as enabled account or  expired password. This mapper uses the `userAccountControl`, and `pwdLastSet` LDAP attributes, specific to MSAD and are not the LDAP standard. For example, if the value of `pwdLastSet` is `0`, the {project_name} user must update their password. The result is an UPDATE_PASSWORD required action added to the user. If the value of  `userAccountControl` is `514` (disabled account), the {project_name} user is disabled.
++
+此 mapper 还会解析 LDAP bind 失败时的 AD 诊断错误码。当用户输入的密码正确、但目录服务器因账户状态拒绝认证时，浏览器登录页会显示对应的专门提示，而不是 "Invalid username or password"：
++
+[cols="1,2,2,2"]
+|===
+|诊断码 |含义 |`WRITABLE` |`READ_ONLY` / `UNSYNCED`
+
+|`532` / `773`
+|密码过期 / 下次登录须更改密码
+|进入改密页，顶部提示 `passwordExpiredUpdateMessage`（密码已过期，请修改密码。）
+|登录页提示 `passwordExpiredContactAdminMessage`（密码已过期，请联系管理员。）
+
+|`701`
+|账户已过期（`accountExpires`）
+2+|登录页提示 `accountExpiredMessage`（账户已过期，请联系管理员。）
+
+|`533`
+|账户已禁用
+|同步禁用本地账户，提示 `accountDisabledMessage`
+|登录页提示 `accountDisabledMessage`
+
+|`775`
+|账户已锁定
+2+|登录页提示 `accountLockedMessage`（账户已锁定，请联系管理员。）
+
+|`52e` 等
+|密码错误
+2+|保持 "Invalid username or password"
+|===
++
+`701`/`533`/`775` 不进入改密流程：改密无法解除这三种状态，且允许 `775` 改密会绕过锁定策略。
+密码错误（如 `52e`）仍按无效凭据处理，并计入 brute-force 失败次数。
+Samba AD DC 返回相同格式的错误码时，可以使用同一机制。
++
+上述提示均为 i18n 消息 key，管理员可在 Realm settings -> Localization -> Realm overrides 中按 key 覆盖文案。
+此机制只覆盖浏览器表单认证；Direct grant（ROPC）仍返回 `invalid_grant`。
++
+NOTE: AD 可能在密码错误时也返回 `775`，此时登录页会显示「账户已锁定」，从而暴露该账号存在且已被锁定。
+{project_name} 自身 brute-force 检测触发的锁定仍显示无效凭据，不受此机制影响。
++
+`WRITABLE` 下的 `532`/`773` 改密写回要求启用 MSAD User Account Mapper，并使用 `LDAPS` 或 `StartTLS` 保护密码写回连接。
+LDAP bind 账号必须能够正常认证，且需要具备目标用户的密码重置权限以及更新 `pwdLastSet` 和 `userAccountControl` 的必要权限。
+应关闭 `Use Kerberos for password authentication`，使密码认证走 LDAP bind；此限制不适用于 SPNEGO 登录。
+`READ_ONLY` 模式无法写回 LDAP 密码，`UNSYNCED` 模式只在本地存储更新密码，因此这两种模式下 `532`/`773` 不会进入改密页，而是在登录页提示联系管理员。
 
 Certificate Mapper::
 This mapper maps X.509 certificates. {project_name} uses it in conjunction with X.509 authentication and `Full certificate in PEM format` as an identity source. This mapper behaves similarly to the `User Attribute Mapper`, but {project_name} can filter for an LDAP attribute storing a PEM or DER format certificate. Enable `Always Read Value From LDAP` with this mapper.
@@ -235,6 +279,8 @@ forced to change their password every time they log in.
 ====
 This capability is based on https://datatracker.ietf.org/doc/html/draft-behera-ldap-password-policy-11[Password Policy for LDAP Directories (IETF draft-behera-ldap-password-policy)].
 For Microsoft Active Directory, use the <<_msad_mapper,MSAD User Account Mapper>> instead.
+Samba AD DC 也应使用此 mapper，并将 LDAP provider 的 `Vendor` 设置为 `Active Directory`。
+此路径不依赖 `Enable LDAP password policy` 设置。
 ====
 
 [[_ldap_connection_pool]]
