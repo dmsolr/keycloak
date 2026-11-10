@@ -41,6 +41,7 @@ import org.keycloak.common.constants.KerberosConstants;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
 import org.keycloak.config.MetricsOptions;
+import org.keycloak.config.SecurityOptions;
 import org.keycloak.federation.kerberos.CommonKerberosConfig;
 import org.keycloak.federation.kerberos.impl.KerberosServerSubjectAuthenticator;
 import org.keycloak.federation.kerberos.impl.KerberosUsernamePasswordAuthenticator;
@@ -275,6 +276,21 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
 
     @Override
     public LDAPStorageProvider create(KeycloakSession session, ComponentModel model) {
+        // Enforce the host allow-list at runtime as well: components persisted before the option was configured
+        // must not keep connecting to hosts that are no longer permitted.
+        if (allowedHosts.isEnforced()) {
+            String connectionUrl = model.getConfig().getFirst(LDAPConstants.CONNECTION_URL);
+            if (connectionUrl != null) {
+                try {
+                    validateConnectionUrlHosts(connectionUrl);
+                } catch (ComponentValidationException e) {
+                    logger.warnf("LDAP provider '%s' rejected at runtime: a connection URL host is not permitted by the '%s' option",
+                            model.getName(), SecurityOptions.LDAP_ALLOWED_HOSTS.getKey());
+                    throw e;
+                }
+            }
+        }
+
         Map<ComponentModel, LDAPConfigDecorator> configDecorators = getLDAPConfigDecorators(session, model);
 
         LDAPIdentityStore ldapIdentityStore = this.ldapStoreRegistry.getLdapStore(session, model, configDecorators, resolveRequestTimer(session, model));
@@ -456,6 +472,9 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
         this.disableKerberosAuthenticationRoundTrip = config.getBoolean("disableKerberosAuthenticationRoundTrip", Boolean.FALSE);
         this.ldapStoreRegistry = new LDAPIdentityStoreRegistry();
         this.allowedHosts = LdapHostAllowList.parse(config.get(ALLOWED_HOSTS));
+        // Also constrain referral targets: an allowed LDAP server could otherwise redirect the client to any host.
+        // Effective when secure-referral is enabled (the default), which routes referrals through ObjectFactoryBuilder.
+        ObjectFactoryBuilder.setAllowedHosts(this.allowedHosts);
         boolean ldapMetricsFeature = Profile.isFeatureEnabled(Profile.Feature.LDAP_METRICS);
         boolean metricsEnabledConfig = config.getBoolean(METRICS_ENABLED, true);
         boolean globalMetricsEnabled = config.root().getBoolean(MetricsOptions.METRICS_ENABLED.getKey(), false);
@@ -473,15 +492,9 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
             // Explicit SLO buckets are applied independently of metricsHistogramsEnabled, consistent with
             // http-metrics-slos: use them instead of the default histogram, or in combination to add buckets.
             String slos = config.get(METRICS_SLOS);
-            if (slos != null && !slos.isBlank()) {
-                Duration[] sloDurations = Arrays.stream(slos.split(","))
-                        .map(String::trim)
-                        .filter(s -> !s.isEmpty())
-                        .map(s -> Duration.ofMillis(Long.parseLong(s)))
-                        .toArray(Duration[]::new);
-                if (sloDurations.length > 0) {
-                    builder.serviceLevelObjectives(sloDurations);
-                }
+            Duration[] sloDurations = parseMetricsSlos(slos);
+            if (sloDurations.length > 0) {
+                builder.serviceLevelObjectives(sloDurations);
             }
 
             Set<String> enabledTags = parseMetricsTags(config.get(METRICS_TAGS));
@@ -987,6 +1000,38 @@ public class LDAPStorageProviderFactory implements UserStorageProviderFactory<LD
             }
         }
         return enabled;
+    }
+
+    /**
+     * Parses the {@code metricsSlos} SPI option (mapped from the first-class {@code ldap-metrics-slos} option) into
+     * SLO bucket durations. Every entry must be a positive number of milliseconds; invalid values fail fast at
+     * startup with the offending option name, consistent with {@link LdapHostAllowList#parse(String)}.
+     */
+    static Duration[] parseMetricsSlos(String slosConfig) {
+        if (slosConfig == null || slosConfig.isBlank()) {
+            return new Duration[0];
+        }
+        return Arrays.stream(slosConfig.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(s -> {
+                    long millis;
+                    try {
+                        millis = Long.parseLong(s);
+                    } catch (NumberFormatException e) {
+                        throw invalidSlo(s);
+                    }
+                    if (millis <= 0) {
+                        throw invalidSlo(s);
+                    }
+                    return Duration.ofMillis(millis);
+                })
+                .toArray(Duration[]::new);
+    }
+
+    private static IllegalArgumentException invalidSlo(String value) {
+        return new IllegalArgumentException("Invalid value '" + value + "' for option '"
+                + MetricsOptions.LDAP_METRICS_SLOS.getKey() + "': expected a positive number of milliseconds");
     }
 
     /**

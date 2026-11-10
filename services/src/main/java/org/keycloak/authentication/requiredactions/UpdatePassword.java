@@ -106,9 +106,11 @@ public class UpdatePassword implements RequiredActionProvider, RequiredActionFac
         LoginFormsProvider form = context.form()
                 .setAttribute("username", context.getAuthenticationSession().getAuthenticatedUser().getUsername());
         // A user storage provider may supply a specific notice (for example an expired password).
+        // Consume the note so a later re-trigger of this action in the same auth session does not show a stale notice.
         String message = context.getAuthenticationSession().getAuthNote(UPDATE_PASSWORD_MESSAGE);
         if (message != null) {
             form.setMessage(MessageType.WARNING, message);
+            context.getAuthenticationSession().removeAuthNote(UPDATE_PASSWORD_MESSAGE);
         }
         Response challenge = form.createResponse(UserModel.RequiredAction.UPDATE_PASSWORD);
         context.challenge(challenge);

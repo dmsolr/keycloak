@@ -898,9 +898,12 @@ public class LDAPOperationManager {
      * If the rule evaluates to true for any PasswordPolicyControl, a
      * PasswordPolicyPasswordChangeException is thrown.
      *
+     * <p>When the response controls cannot be read, the failure is logged and ignored so that the original
+     * bind outcome (in particular an AuthenticationException carrying AD diagnostic subcodes such as 532)
+     * is preserved for the caller instead of being replaced by a generic error.
+     *
      * @param authCtx The LDAP context to read response controls from
      * @param rule  A predicate representing the password policy condition to test
-     * @throws AuthenticationException If reading the LDAP response controls fails
      * @throws PasswordPolicyPasswordChangeException If the policy condition is true
      */
     private void checkPasswordPolicy(LdapContext authCtx, Predicate<PasswordPolicyControl> rule)
@@ -914,7 +917,8 @@ public class LDAPOperationManager {
         try {
             responseControls = authCtx.getResponseControls();
         } catch (NamingException e) {
-            throw new AuthenticationException("Could not get LDAP response controls");
+            logger.debugf(e, "Could not read LDAP response controls; keeping the original bind outcome");
+            return;
         }
         if (responseControls == null) {
             return;

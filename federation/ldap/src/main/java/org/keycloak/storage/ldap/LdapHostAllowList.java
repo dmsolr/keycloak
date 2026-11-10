@@ -128,6 +128,14 @@ public final class LdapHostAllowList {
     }
 
     /**
+     * Returns {@code true} when this allow-list actually restricts hosts, i.e. it is non-empty and not the
+     * allow-all {@code *} entry. Callers can use this to skip per-request URL parsing when no restriction is active.
+     */
+    public boolean isEnforced() {
+        return !matchAll && !(exactHosts.isEmpty() && wildcardSuffixes.isEmpty() && cidrs.isEmpty());
+    }
+
+    /**
      * Returns {@code true} when the given host is permitted by this allow-list. See the class Javadoc for the matching
      * rules. This method never throws and never performs DNS resolution.
      *

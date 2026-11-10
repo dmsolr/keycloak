@@ -236,6 +236,21 @@ public class LdapHostAllowListTest {
         assertParseFails("ldap.example.com,10.0.0.0/33");
     }
 
+    @Test
+    public void testIsEnforced() {
+        // unset / blank / "*" -> no restriction, callers may skip per-request URL checks
+        Assert.assertFalse(LdapHostAllowList.parse(null).isEnforced());
+        Assert.assertFalse(LdapHostAllowList.parse("  ").isEnforced());
+        Assert.assertFalse(LdapHostAllowList.parse("*").isEnforced());
+        Assert.assertFalse(LdapHostAllowList.parse("*,").isEnforced());
+        // "*" wins over other entries: the list still allows any host
+        Assert.assertFalse(LdapHostAllowList.parse("*,ldap.example.com").isEnforced());
+        // any real entry activates enforcement
+        Assert.assertTrue(LdapHostAllowList.parse("ldap.example.com").isEnforced());
+        Assert.assertTrue(LdapHostAllowList.parse("*.example.com").isEnforced());
+        Assert.assertTrue(LdapHostAllowList.parse("10.0.0.0/8").isEnforced());
+    }
+
     private static void assertParseFails(String csv) {
         try {
             LdapHostAllowList.parse(csv);

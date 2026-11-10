@@ -17,6 +17,7 @@
 
 package org.keycloak.storage.ldap;
 
+import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -57,6 +58,29 @@ public class LDAPStorageProviderFactoryMetricsTagsTest {
             Assert.fail("Expected IllegalArgumentException for unknown tag");
         } catch (IllegalArgumentException expected) {
             // expected
+        }
+    }
+
+    @Test
+    public void testParseMetricsSlos() {
+        Assert.assertEquals(0, LDAPStorageProviderFactory.parseMetricsSlos(null).length);
+        Assert.assertEquals(0, LDAPStorageProviderFactory.parseMetricsSlos("  ").length);
+        Assert.assertEquals(0, LDAPStorageProviderFactory.parseMetricsSlos(",,").length);
+
+        Duration[] slos = LDAPStorageProviderFactory.parseMetricsSlos(" 5,100 , 1000");
+        Assert.assertArrayEquals(new Duration[] {Duration.ofMillis(5), Duration.ofMillis(100), Duration.ofMillis(1000)}, slos);
+    }
+
+    @Test
+    public void testParseMetricsSlosInvalidValues() {
+        // non-numeric, zero and negative values must fail fast with the option name in the message
+        for (String invalid : new String[] {"abc", "5ms", "PT1S", "0", "-1", "5,abc"}) {
+            try {
+                LDAPStorageProviderFactory.parseMetricsSlos(invalid);
+                Assert.fail("Expected IllegalArgumentException for SLO value: " + invalid);
+            } catch (IllegalArgumentException expected) {
+                Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("ldap-metrics-slos"));
+            }
         }
     }
 

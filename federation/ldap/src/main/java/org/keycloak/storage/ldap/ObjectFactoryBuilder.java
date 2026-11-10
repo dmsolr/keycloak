@@ -1,5 +1,6 @@
 package org.keycloak.storage.ldap;
 
+import java.net.URI;
 import java.util.Hashtable;
 import java.util.List;
 import javax.naming.CommunicationException;
@@ -24,11 +25,21 @@ import org.jboss.logging.Logger;
  * <p>When the LDAP provider encounters a referral, it tries to create an {@link ObjectFactory} from this builder.
  * If the referral reference contains an LDAP URL, a {@link DirContextObjectFactory} is created to handle the referral.
  * Otherwise, a {@link CommunicationException} is thrown to indicate that the referral cannot be processed.
+ *
+ * <p>Referral URLs are additionally checked against the server-level LDAP host allow-list
+ * ({@code ldap-allowed-hosts}), so an allowed LDAP server cannot redirect the client to a host outside the list.
  */
 final class ObjectFactoryBuilder implements javax.naming.spi.ObjectFactoryBuilder, ObjectFactory {
 
     private static final Logger logger = Logger.getLogger(ObjectFactoryBuilder.class);
     private static final String IS_KC_OBJECT_FACTORY_BUILDER = "kc.jndi.object.factory.builder";
+
+    // Shared with LDAPStorageProviderFactory (server-level option, parsed once at startup). Allow-all until configured.
+    private static volatile LdapHostAllowList allowedHosts = LdapHostAllowList.parse(null);
+
+    static void setAllowedHosts(LdapHostAllowList allowList) {
+        allowedHosts = allowList;
+    }
 
     static boolean isSet() {
         Hashtable<Object, Object> env = new Hashtable<>();
@@ -64,6 +75,7 @@ final class ObjectFactoryBuilder implements javax.naming.spi.ObjectFactoryBuilde
             String ldapUrl = getLdapUrl(ref);
 
             if (ldapUrl != null) {
+                checkReferralHosts(ldapUrl);
                 return new DirContextObjectFactory(ldapUrl);
             }
         } else {
@@ -72,6 +84,27 @@ final class ObjectFactoryBuilder implements javax.naming.spi.ObjectFactoryBuilde
         }
 
         throw new CommunicationException("Referral reference does not contain an LDAP URL: " + obj);
+    }
+
+    // Referral URLs must pass the same host allow-list as the configured connection URL; otherwise an allowed
+    // LDAP server could redirect the client to an arbitrary (e.g. internal) host. Fails closed on unknown hosts.
+    private static void checkReferralHosts(String ldapUrl) throws CommunicationException {
+        LdapHostAllowList allowList = allowedHosts;
+        if (!allowList.isEnforced()) {
+            return;
+        }
+        for (String url : ldapUrl.split(" ")) {
+            String host;
+            try {
+                host = URI.create(url).getHost();
+            } catch (IllegalArgumentException e) {
+                throw new CommunicationException("Malformed referral URL: " + url);
+            }
+            if (!allowList.isAllowed(host)) {
+                logger.warnf("Referral URL host is not permitted by the LDAP allowed-hosts list. Rejecting referral: %s", url);
+                throw new CommunicationException("Referral URL host is not permitted by the LDAP allowed-hosts list: " + url);
+            }
+        }
     }
 
     @Override

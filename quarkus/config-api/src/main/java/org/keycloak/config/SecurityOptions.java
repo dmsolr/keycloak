@@ -25,7 +25,9 @@ public class SecurityOptions {
                     + "(ldap.example.com), a wildcard suffix (*.example.com, matching sub-domains only), a literal IP address "
                     + "(192.0.2.1, fd00::1), or an IP CIDR range (10.0.0.0/8, fd00::/8). Hosts are matched literally and are "
                     + "never resolved via DNS, so a hostname is only matched by hostname entries and a literal IP only by "
-                    + "IP/CIDR entries. When unset or empty, any host is allowed.")
+                    + "IP/CIDR entries. The list is enforced both when an LDAP component is saved or tested and at runtime "
+                    + "before a provider connects, and it also constrains LDAP referral targets (when secure-referral is enabled, "
+                    + "which is the default). When unset or empty, any host is allowed.")
             .buildTime(false)
             .build();
 

@@ -39,6 +39,8 @@ import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
 import javax.naming.directory.SearchControls;
 
+import org.keycloak.authentication.authenticators.browser.AbstractUsernameFormAuthenticator;
+import org.keycloak.authentication.requiredactions.UpdatePassword;
 import org.keycloak.common.constants.KerberosConstants;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.credential.CredentialAuthentication;
@@ -69,6 +71,7 @@ import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.models.utils.ReadOnlyUserModelDelegate;
 import org.keycloak.policy.PasswordPolicyManagerProvider;
 import org.keycloak.policy.PolicyError;
+import org.keycloak.services.messages.Messages;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.storage.DatastoreProvider;
 import org.keycloak.storage.ReadOnlyException;
@@ -841,14 +844,22 @@ public class LDAPStorageProvider implements UserStorageProvider,
                 return true;
             } catch (PasswordPolicyPasswordChangeException e) {
                 // LDAP password policy requires a forced password change.
+                AuthenticationSessionModel authSession = session.getContext().getAuthenticationSession();
                 // Check for edit mode writable, so that user can modify LDAP password.
                 if (editMode != EditMode.WRITABLE) {
                     logger.debugf("User '%s' in realm '%s' is forced to change password but editMode is not writable. Failing login.", user.getUsername(), realm.getName());
+                    // Same dedicated notice as the MSAD diagnostic-code path; the message key defaults to the
+                    // generic invalid-credentials text unless the realm overrides it (see MSADUserAccountControlStorageMapper).
+                    if (authSession != null) {
+                        authSession.setAuthNote(AbstractUsernameFormAuthenticator.LOGIN_ERROR_MESSAGE, Messages.PASSWORD_EXPIRED_CONTACT_ADMIN);
+                    }
                     return false;
+                }
+                if (authSession != null) {
+                    authSession.setAuthNote(UpdatePassword.UPDATE_PASSWORD_MESSAGE, Messages.PASSWORD_EXPIRED_UPDATE);
                 }
                 if (user.getRequiredActionsStream()
                         .noneMatch(action -> Objects.equals(action, UserModel.RequiredAction.UPDATE_PASSWORD.name()))) {
-                    AuthenticationSessionModel authSession = session.getContext().getAuthenticationSession();
                     if (authSession != null) {
                         if (authSession.getRequiredActions().stream().noneMatch(action -> Objects.equals(action, UserModel.RequiredAction.UPDATE_PASSWORD.name()))) {
                             logger.debugf("Adding requiredAction UPDATE_PASSWORD to the authenticationSession of user %s", user.getUsername());

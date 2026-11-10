@@ -172,7 +172,8 @@ public class MSADUserAccountControlStorageMapper extends AbstractLDAPStorageMapp
 
         AuthErrorOutcome outcome = resolveAuthErrorCode(errorCode, ldapProvider.getEditMode());
 
-        // 将专门的提示消息写入认证会话，供登录页或改密页显示，避免用户只看到无效凭据。
+        // 将专门的提示消息 key 写入认证会话，供登录页或改密页显示。这些 key 的默认文案与无效凭据一致，
+        // 避免泄漏密码正确性或账户状态；realm 可通过 Localization -> Realm overrides 启用专门文案。
         AuthenticationSessionModel authSession = getSession().getContext().getAuthenticationSession();
         if (outcome.authNoteName != null && authSession != null) {
             authSession.setAuthNote(outcome.authNoteName, outcome.messageKey);
@@ -220,7 +221,8 @@ public class MSADUserAccountControlStorageMapper extends AbstractLDAPStorageMapp
      *
      * <p>532/773 表示密码过期或下次登录须改密；701 表示账户已过期；533 表示账户禁用；775 表示账户锁定。
      * WRITABLE 模式下 532/773 放行进入改密流程，533 同步禁用用户；其余情况不放行，
-     * 但通过 auth note 携带专门的提示消息 key，使登录页不再显示无效凭据。
+     * 但通过 auth note 携带专门的提示消息 key。这些 key 的默认文案与无效凭据一致（避免向未认证
+     * 攻击者确认密码正确或账户状态），realm 可通过 Localization -> Realm overrides 启用专门文案。
      *
      * @param errorCode 诊断错误码，例如 {@code 532}
      * @param editMode  LDAP provider 的 Edit mode

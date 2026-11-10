@@ -232,6 +232,9 @@ public abstract class AbstractUsernameFormAuthenticator extends AbstractFormAuth
         if (isDisabledByBruteForce(context, user)) return false;
 
         if (password != null && !password.isEmpty() && user.credentialManager().isValid(UserCredentialModel.password(password))) {
+            // Drop any login-error note a user storage provider may have written while probing credentials
+            // (e.g. another provider accepted the password), so it cannot leak into a later failed attempt.
+            context.getAuthenticationSession().removeAuthNote(LOGIN_ERROR_MESSAGE);
             context.getAuthenticationSession().setAuthNote(AuthenticationManager.PASSWORD_VALIDATED, "true");
             return true;
         } else {
